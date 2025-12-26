@@ -26,7 +26,7 @@ type Person struct {
 }
 
 type MySQLInstance struct {
-	db *sql.DB
+	DB *sql.DB
 }
 type RedisInstance struct {
 	Client *redis.Client
@@ -58,55 +58,53 @@ func ValidatePerson(person Person) error {
 	if person.Age >= 100 {
 		return fmt.Errorf("Age must be smaller than 100")
 	}
-	if person.Age == 0 {
-		return fmt.Errorf("Age is required and cannot be empty")
-	}
 	return nil
 }
 
 func (h *HybridHandler) CreatePerson(w http.ResponseWriter, r *http.Request) {
-	var person Person
-	if err := json.NewDecoder(r.Body).Decode(&person); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	var persons Person
+	if err := json.NewDecoder(r.Body).Decode(&persons); err != nil {
+		http.Error(w, "Invalid json", http.StatusBadRequest)
 		return
 	}
-	if err := ValidatePerson(person); err != nil {
+	if err := ValidatePerson(persons); err != nil {
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
-	res, err := h.MySQL.db.Exec("INSERT INTO persons (name , age , email) VALUES(? , ? , ?)", person.Name, person.Age, person.Email)
+	res, err := h.MySQL.DB.Exec("INSERT INTO persons (name , age , email) VALUES(? , ? , ?)", persons.Name, persons.Age, persons.Email)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	id, err := res.LastInsertId()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	person.ID = int(id)
+	persons.ID = int(id)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(person)
+	json.NewEncoder(w).Encode(persons)
 }
 func (h *HybridHandler) ReadPerson(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	id := vars["id"]
 
 	value, err := h.Redis.Client.Get(h.Ctx, id).Result()
-	if err != nil {
+	if err == nil {
 		log.Println("Cache hit!")
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(value))
 		return
 	}
 	fmt.Println("Cache miss Quering MySQL ...")
-	row := h.MySQL.db.QueryRow("SELECT id , name , age , email from persons WHWRE  id=?", id)
+	row := h.MySQL.DB.QueryRow("SELECT id , name , age , email FROM persons WHERE  id=?", id)
 
 	var persons Person
-	if err := row.Scan(&persons.ID, &persons.Name, persons.Age, persons.Email); err != nil {
+	if err := row.Scan(&persons.ID, &persons.Name, &persons.Age, &persons.Email); err != nil {
 		http.Error(w, "User not found", http.StatusNotFound)
 		return
 	}
@@ -131,7 +129,7 @@ func (h *HybridHandler) UpdatePerson(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := h.MySQL.db.Exec("update persons SET name=?,Age=?,email=? WHERE id=?", persons.Name, persons.Age, persons.Email)
+	res, err := h.MySQL.DB.Exec("UPDATE persons SET name=?,Age=?,email=? WHERE id=?", persons.Name, persons.Age, persons.Email, persons.ID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -161,7 +159,7 @@ func (h *HybridHandler) DeletePerson(w http.ResponseWriter, r *http.Request) {
 	id := vars["id"]
 	idINT, _ := strconv.Atoi(id)
 
-	res, err := h.MySQL.db.Exec("DELETE FROM persons WHERE id=?", idINT)
+	res, err := h.MySQL.DB.Exec("DELETE FROM persons WHERE id=?", idINT)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -185,7 +183,7 @@ func (h *HybridHandler) DeletePerson(w http.ResponseWriter, r *http.Request) {
 }
 func ConnectReddis() (*RedisInstance, error) {
 	rdb := redis.NewClient(&redis.Options{
-		Addr: os.Getenv("REDDIS_ADDR"),
+		Addr: os.Getenv("REDIS_ADDR"),
 		DB:   0,
 	})
 	return &RedisInstance{Client: rdb}, nil
@@ -195,7 +193,7 @@ func ConnectMySQL() (*MySQLInstance, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &MySQLInstance{db: db}, nil
+	return &MySQLInstance{DB: db}, nil
 }
 func Crudoperation() {
 	godotenv.Load()
@@ -213,9 +211,9 @@ func Crudoperation() {
 	r := mux.NewRouter()
 
 	r.HandleFunc("/persons", handle.CreatePerson).Methods("POST")
-	r.HandleFunc("/persons", handle.ReadPerson).Methods("GET")
+	r.HandleFunc("/persons/{id}", handle.ReadPerson).Methods("GET")
 	r.HandleFunc("/persons/{id}", handle.UpdatePerson).Methods("PUT")
-	r.HandleFunc("?persons/{id}", handle.DeletePerson).Methods("DELETE")
+	r.HandleFunc("/persons/{id}", handle.DeletePerson).Methods("DELETE")
 
 	fmt.Println("Server running on port:8080")
 	http.ListenAndServe(":8080", r)
